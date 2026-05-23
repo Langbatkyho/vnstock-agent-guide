@@ -1,0 +1,7 @@
+vnstock_data
+vnstock_ta
+pandas
+numpy
+schedule
+requests
+google-genai

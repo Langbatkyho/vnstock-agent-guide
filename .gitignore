@@ -192,3 +192,7 @@ cython_debug/
 docs/.DS_Store
 .DS_Store
 docs/.DS_Store
+
+# Bot application — sensitive config and generated logs
+bot_app/config.py
+bot_app/logs/
