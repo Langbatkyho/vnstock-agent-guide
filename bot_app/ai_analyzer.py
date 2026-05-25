@@ -65,6 +65,14 @@ def generate_prompt(target_symbol, scorecards, strategy_result):
         available_indicators += ", RSI(14)"
     if 'macd_hist' in sample_keys:
         available_indicators += ", MACD Histogram"
+    if 'rrg_mid_term_rs' in sample_keys:
+        available_indicators += ", Sức mạnh RRG (RS & RM Short/Mid/Standard, trạng thái Drawdown)"
+    if 'Security_PE' in sample_keys:
+        available_indicators += ", So sánh định giá ngành (Peer Compare PE/PB/ROE)"
+    if 'proprietary_net_val_1d' in sample_keys:
+        available_indicators += ", Dòng tiền Tự doanh (1D, 10D, 1M)"
+    if 'buy_active_ratio' in sample_keys:
+        available_indicators += ", Áp lực mua chủ động từ bước giá (Order Flow)"
 
     prompt = f"""Bạn là chuyên gia phân tích kỹ thuật chứng khoán Việt Nam.
 Hãy phân tích dữ liệu kỹ thuật thời gian thực của cổ phiếu mục tiêu {target_symbol} so sánh với các cổ phiếu cùng ngành.
@@ -78,11 +86,11 @@ TÍN HIỆU TỰ ĐỘNG TỪ HỆ THỐNG:
 CÁC CHỈ SỐ KHẢ DỤNG: {available_indicators}
 
 YÊU CẦU:
-Dựa vào các chỉ số kỹ thuật trên, hãy đưa ra nhận định ngắn gọn (tối đa 200 từ) theo cấu trúc sau:
+Dựa vào các chỉ số kỹ thuật trên (hãy kết hợp cả các dữ liệu RRG, So sánh ngành Peer Compare, Tự doanh, Order Flow nếu có trong dữ liệu), hãy đưa ra nhận định ngắn gọn (tối đa 200 từ) theo cấu trúc sau:
 
-1. So sánh Sức mạnh: {target_symbol} đang mạnh hay yếu hơn các mã tham chiếu? Dẫn chứng bằng chỉ số cụ thể.
-2. Xu hướng Ngắn hạn: Dự báo xu hướng tiếp theo của {target_symbol} (Tăng/Giảm/Tích lũy) dựa trên tín hiệu tự động và dữ liệu.
-3. Khuyến nghị: (MUA / BÁN / QUAN SÁT) kèm một lý do quan trọng nhất. Tập trung phân tích kỹ thuật, không cảnh báo chung chung.
+1. So sánh Sức mạnh: {target_symbol} đang mạnh hay yếu hơn các mã tham chiếu? Dẫn chứng bằng các chỉ số sức mạnh kỹ thuật (RS, RRG, lực mua chủ động) và so sánh định giá (P/E, P/B, ROE) với trung bình ngành.
+2. Xu hướng Ngắn hạn: Dự báo xu hướng tiếp theo của {target_symbol} (Tăng/Giảm/Tích lũy) kết hợp dòng tiền khối ngoại và tự doanh.
+3. Khuyến nghị: (MUA / BÁN / QUAN SÁT) kèm một lý do quan trọng nhất. Tập trung phân tích kỹ thuật và định lượng dòng tiền, không cảnh báo chung chung.
 """
     return prompt
 
@@ -123,7 +131,7 @@ def analyze_scorecards(target_symbol, scorecards, strategy_result):
     return f"⚠️ Lỗi phân tích AI: Đã thử {max_retries} lần nhưng đều bị Rate Limit."
 
 
-def generate_overall_prompt(scorecards_by_target, ai_reports, total_targets=0):
+def generate_overall_prompt(scorecards_by_target, ai_reports, total_targets=0, market_breadth=None, macro_data=None):
     """Tạo prompt tổng hợp chéo cho toàn bộ các nhóm cổ phiếu."""
     
     # 1. Bảng số liệu so sánh chéo để AI nhìn trực quan định lượng
@@ -151,6 +159,33 @@ def generate_overall_prompt(scorecards_by_target, ai_reports, total_targets=0):
     if total_targets > 0 and n_ok < total_targets:
         data_text += f"\n\n⚠️ LƯU Ý: Chỉ có {n_ok}/{total_targets} nhóm có dữ liệu. Một số nhóm thiếu do lỗi kết nối."
     
+    # Bổ sung thông tin độ rộng và vĩ mô
+    market_text = ""
+    if market_breadth:
+        above_ma20 = market_breadth.get('above_ma20_pct')
+        above_ma50 = market_breadth.get('above_ma50_pct')
+        avg_20_ma20 = market_breadth.get('avg_20d_above_ma20_pct')
+        avg_20_ma50 = market_breadth.get('avg_20d_above_ma50_pct')
+        market_text += "Độ rộng Thị trường HOSE:\n"
+        if above_ma20 is not None:
+            market_text += f"- % Cổ phiếu trên MA20: {above_ma20:.2f}% (Trung bình 20 phiên: {avg_20_ma20:.2f}%)\n"
+        if above_ma50 is not None:
+            market_text += f"- % Cổ phiếu trên MA50: {above_ma50:.2f}% (Trung bình 20 phiên: {avg_20_ma50:.2f}%)\n"
+        if 'pe' in market_breadth:
+            market_text += f"- P/E toàn thị trường: {market_breadth['pe']:.2f} | P/B: {market_breadth['pb']:.2f}\n"
+        market_text += "\n"
+
+    if macro_data:
+        market_text += "Dữ liệu Vĩ mô & Giá Hàng hóa liên quan:\n"
+        for key, val in macro_data.items():
+            if isinstance(val, dict):
+                # Chỉ lấy các trường có giá trị để tránh rối mắt
+                val_str = ", ".join([f"{k}: {v}" for k, v in val.items() if v is not None])
+                market_text += f"- {key}: {val_str}\n"
+            else:
+                market_text += f"- {key}: {val}\n"
+        market_text += "\n"
+
     # 2. Các nhận định AI riêng lẻ
     report_text_list = []
     for item in ai_reports:
@@ -161,25 +196,28 @@ def generate_overall_prompt(scorecards_by_target, ai_reports, total_targets=0):
     reports_text = "\n\n".join(report_text_list)
     
     prompt = f"""Bạn là một chuyên gia phân tích chiến lược chứng khoán Việt Nam cao cấp.
-Nhiệm vụ của bạn là tổng hợp bức tranh toàn cảnh thị trường dựa trên số liệu định lượng gốc và nhận định AI riêng lẻ của các nhóm ngành.
+Nhiệm vụ của bạn là tổng hợp bức tranh toàn cảnh thị trường dựa trên số liệu định lượng gốc, độ rộng thị trường, bối cảnh vĩ mô toàn cầu, giá hàng hóa liên quan và nhận định AI riêng lẻ của các nhóm ngành.
 
 BẢNG SO SÁNH ĐỊNH LƯỢNG GỐC:
 {data_text}
+
+THÔNG TIN ĐỘ RỘNG THỊ TRƯỜNG HOSE & VĨ MÔ/HÀNG HÓA:
+{market_text}
 
 CÁC BÁO CÁO PHÂN TÍCH CHI TIẾT AI RIÊNG LẺ:
 {reports_text}
 
 YÊU CẦU:
-Hãy đưa ra một Báo cáo Chiến lược Tổng quan Thị trường ngắn gọn (tối đa 150 từ), tuân thủ đúng cấu trúc:
+Hãy đưa ra một Báo cáo Chiến lược Tổng quan Thị trường ngắn gọn (tối đa 250 từ), tuân thủ đúng cấu trúc:
 
-1. ĐÁNH GIÁ CHÉO: Nhóm cổ phiếu nào đang thể hiện sức mạnh vượt trội nhất về cả xu hướng lẫn dòng tiền (dựa vào RS TB, Vol/SMA20, biến động giá)? 
-2. KHUYẾN NGHỊ ƯU TIÊN: Đưa ra lựa chọn duy nhất về nhóm cần ưu tiên giải ngân lúc này (kèm 1 lý do cốt lõi). Nếu tất cả đều rủi ro, khuyến nghị đứng ngoài quan sát.
+1. ĐÁNH GIÁ CHÉO: Nhóm cổ phiếu nào đang thể hiện sức mạnh vượt trội nhất về cả xu hướng lẫn dòng tiền (dựa vào RS TB, Vol/SMA20, biến động giá)? Đánh giá độ đồng thuận của thị trường thông qua Độ rộng Thị trường (% cổ phiếu trên MA20/MA50).
+2. KHUYẾN NGHỊ ƯU TIÊN: Đưa ra lựa chọn duy nhất về nhóm cần ưu tiên giải ngân lúc này (kèm 1 lý do cốt lõi), đối chiếu trực tiếp với xu hướng vĩ mô toàn cầu hoặc biến động giá hàng hóa liên quan (thép, dầu thô...). Nếu tất cả đều rủi ro, khuyến nghị đứng ngoài quan sát.
 *Lưu ý: Không dùng các câu từ cảnh báo vĩ mô sáo rỗng. Hãy đi thẳng vào khuyến nghị cụ thể.*
 """
     return prompt
 
 
-def analyze_overall_market(scorecards_by_target, ai_reports, total_targets=0):
+def analyze_overall_market(scorecards_by_target, ai_reports, total_targets=0, market_breadth=None, macro_data=None):
     """Gọi Gemini API để tạo nhận định tổng quan thị trường."""
     client_to_use = _client_overall if _client_overall is not None else _client
     
@@ -188,7 +226,7 @@ def analyze_overall_market(scorecards_by_target, ai_reports, total_targets=0):
     if not ai_reports:
         return "⚠️ Không có báo cáo AI lẻ để tổng hợp."
         
-    prompt = generate_overall_prompt(scorecards_by_target, ai_reports, total_targets)
+    prompt = generate_overall_prompt(scorecards_by_target, ai_reports, total_targets, market_breadth, macro_data)
     
     if _client_overall is not None:
         logger.info("Sending overall market prompt to Gemini using GEMINI_API_KEY_OVERALL...")

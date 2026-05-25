@@ -7,6 +7,11 @@ WATCHLIST = {
     "VND": ["SSI", "VIX"]
 }
 
+# 1.1 Commodity Mapping for Targets
+COMMODITY_MAPPING = {
+    "HPG": "steel"
+}
+
 # 2. Benchmark Configuration (Option B: Custom VN-Index excluding VIC and VHM)
 BENCHMARK_INDEX = "VNINDEX"
 EXCLUDED_FROM_BENCHMARK = ["VIC", "VHM"]

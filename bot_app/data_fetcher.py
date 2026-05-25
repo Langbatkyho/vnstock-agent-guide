@@ -130,3 +130,165 @@ def fetch_foreign_flow(symbol, days=30):
     except Exception as e:
         logger.error(f"Error fetching foreign flow for {symbol}: {e}")
         return None
+
+
+def _to_native(value):
+    """Convert numpy/pandas types to native Python types for JSON/dict usability."""
+    if hasattr(value, 'item'):
+        return value.item()
+    return value
+
+
+def fetch_rrg(symbol):
+    """Fetch RRG metrics for the symbol."""
+    logger.info(f"Fetching RRG for {symbol}")
+    try:
+        from vnstock_data import Insights
+        ins = Insights()
+        df = ins.equity(symbol).rrg()
+        _rate_limit_pause()
+        if df is not None and not df.empty:
+            row = df.iloc[-1]
+            res = {}
+            for col in ['RRG_RS_Short_Term', 'RRG_RM_Short_Term',
+                        'RRG_RS_Mid_Term', 'RRG_RM_Mid_Term',
+                        'RRG_RS_Standard_Term', 'RRG_RM_Standard_Term',
+                        'DRAW_DOWN_STATUS', 'DRAW_DOWN_VALUE']:
+                if col in df.columns:
+                    val = row[col]
+                    res[col] = _to_native(val)
+            return res
+    except Exception as e:
+        logger.error(f"Error fetching RRG for {symbol}: {e}")
+    return None
+
+
+def fetch_peer_compare(symbol):
+    """Fetch industry peer comparison metrics for the symbol."""
+    logger.info(f"Fetching peer compare for {symbol}")
+    try:
+        from vnstock_data import Insights
+        ins = Insights()
+        df = ins.equity(symbol).peer_compare()
+        _rate_limit_pause()
+        if df is not None and not df.empty:
+            row = df.iloc[0]
+            res = {}
+            for col in df.columns:
+                val = row[col]
+                res[col] = _to_native(val)
+            return res
+    except Exception as e:
+        logger.error(f"Error fetching peer compare for {symbol}: {e}")
+    return None
+
+
+def fetch_market_breadth():
+    """Fetch overall market breadth (MA20/MA50 percentage) for HOSE."""
+    logger.info("Fetching overall market breadth")
+    try:
+        from vnstock_data import Insights
+        ins = Insights()
+        df = ins.sentiment.breadth()
+        _rate_limit_pause()
+        if df is not None and not df.empty:
+            if 'exchange' in df.columns:
+                df_hose = df[df['exchange'] == 'HOSE']
+            else:
+                df_hose = df
+            if not df_hose.empty:
+                row = df_hose.iloc[-1]
+                res = {}
+                for col in ['above_ma20_pct', 'above_ma50_pct',
+                            'avg_20d_above_ma20_pct', 'avg_20d_above_ma50_pct',
+                            'pe', 'pb']:
+                    if col in df_hose.columns:
+                        val = row[col]
+                        res[col] = _to_native(val)
+                return res
+    except Exception as e:
+        logger.error(f"Error fetching market breadth: {e}")
+    return None
+
+
+def fetch_all_proprietary_flow():
+    """Fetch self-trading proprietary flow for all symbols (1 single API call)."""
+    logger.info("Fetching all proprietary flow")
+    try:
+        from vnstock_data import Insights
+        ins = Insights()
+        df = ins.flow.proprietary()
+        _rate_limit_pause()
+        return df
+    except Exception as e:
+        logger.error(f"Error fetching proprietary flow: {e}")
+    return None
+
+
+def fetch_order_flow(symbol):
+    """Fetch order flow volume distribution by price step and calculate buy pressure."""
+    logger.info(f"Fetching order flow for {symbol}")
+    try:
+        from vnstock_data import Insights
+        ins = Insights()
+        df = ins.equity(symbol).order_flow()
+        _rate_limit_pause()
+        if df is not None and not df.empty:
+            total_buy = df['BuyActiveQtty'].sum() if 'BuyActiveQtty' in df.columns else 0
+            total_sell = df['SellActiveQtty'].sum() if 'SellActiveQtty' in df.columns else 0
+            total_active = total_buy + total_sell
+            buy_ratio = (total_buy / total_active * 100) if total_active > 0 else 50.0
+            return {
+                "total_buy_active_qtty": _to_native(total_buy),
+                "total_sell_active_qtty": _to_native(total_sell),
+                "buy_active_ratio": _to_native(buy_ratio)
+            }
+    except Exception as e:
+        logger.error(f"Error fetching order flow for {symbol}: {e}")
+    return None
+
+
+def fetch_commodity_price(commodity_name):
+    """Fetch latest commodity price dynamically by name from Macro().commodity()."""
+    logger.info(f"Fetching commodity price for {commodity_name}")
+    try:
+        from vnstock_data import Macro
+        macro = Macro()
+        commodity_obj = macro.commodity()
+        if hasattr(commodity_obj, commodity_name):
+            func = getattr(commodity_obj, commodity_name)
+            df = func()
+            _rate_limit_pause()
+            if df is not None and not df.empty:
+                row = df.iloc[-1]
+                res = {}
+                for col in df.columns:
+                    val = row[col]
+                    res[col] = _to_native(val)
+                return res
+    except Exception as e:
+        logger.error(f"Error fetching commodity {commodity_name}: {e}")
+    return None
+
+
+def fetch_macro_global(method_name):
+    """Fetch global macro metric (e.g. bond_yield, fed_rate, index) from Macro().global."""
+    logger.info(f"Fetching macro global {method_name}")
+    try:
+        from vnstock_data import Macro
+        macro = Macro()
+        macro_global = getattr(macro, 'global', None)
+        if macro_global is not None and hasattr(macro_global, method_name):
+            func = getattr(macro_global, method_name)
+            df = func()
+            _rate_limit_pause()
+            if df is not None and not df.empty:
+                row = df.iloc[-1]
+                res = {}
+                for col in df.columns:
+                    val = row[col]
+                    res[col] = _to_native(val)
+                return res
+    except Exception as e:
+        logger.error(f"Error fetching macro global {method_name}: {e}")
+    return None
