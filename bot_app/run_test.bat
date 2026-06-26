@@ -38,4 +38,3 @@ echo.
 echo ==========================================================
 echo Chuong trinh da chay xong. Nhan phim bat ky de thoat.
 echo ==========================================================
-pause

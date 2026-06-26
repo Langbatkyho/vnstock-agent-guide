@@ -9,24 +9,45 @@ logger = logging.getLogger(__name__)
 # Khởi tạo Gemini Client (SDK mới: google-genai)
 _client = None
 _client_overall = None
+_api_keys = []
+_current_key_idx = 0
 
 try:
-    if config.GEMINI_API_KEY != "YOUR_GEMINI_API_KEY":
-        _client = genai.Client(api_key=config.GEMINI_API_KEY)
-        logger.info(f"Gemini Client initialized (model: {config.GEMINI_MODEL})")
+    if hasattr(config, "GEMINI_API_KEYS") and config.GEMINI_API_KEYS:
+        _api_keys = [k.strip() for k in config.GEMINI_API_KEYS.split(",") if k.strip() and k.strip() != "YOUR_API_KEYS"]
+    elif hasattr(config, "GEMINI_API_KEY") and config.GEMINI_API_KEY != "YOUR_GEMINI_API_KEY":
+        _api_keys = [config.GEMINI_API_KEY]
+        
+    if _api_keys:
+        _client = genai.Client(api_key=_api_keys[0])
+        logger.info(f"Gemini Client initialized with {len(_api_keys)} keys (model: {getattr(config, 'GEMINI_MODEL', 'gemini-3.5-flash')})")
     else:
-        logger.warning("GEMINI_API_KEY not configured!")
+        logger.warning("GEMINI_API_KEYS not configured!")
 except Exception as e:
     logger.error(f"Error initializing Gemini Client: {e}")
 
 try:
     if hasattr(config, "GEMINI_API_KEY_OVERALL") and config.GEMINI_API_KEY_OVERALL != "YOUR_GEMINI_API_KEY_OVERALL" and config.GEMINI_API_KEY_OVERALL:
         _client_overall = genai.Client(api_key=config.GEMINI_API_KEY_OVERALL)
-        logger.info(f"Gemini Overall Client initialized (model: {config.GEMINI_MODEL})")
+        logger.info(f"Gemini Overall Client initialized (model: {getattr(config, 'GEMINI_MODEL', 'gemini-3.5-flash')})")
     else:
         logger.warning("GEMINI_API_KEY_OVERALL not configured, overall analysis will use fallback to primary client.")
 except Exception as e:
     logger.error(f"Error initializing Gemini Overall Client: {e}")
+
+def rotate_api_key(is_overall=False):
+    global _current_key_idx, _client, _client_overall
+    if is_overall and _client_overall is not None:
+        logger.warning("Overall client rate limited. Switching overall analysis to primary client pool.")
+        _client_overall = None
+        return True
+        
+    if not _api_keys:
+        return False
+    _current_key_idx = (_current_key_idx + 1) % len(_api_keys)
+    _client = genai.Client(api_key=_api_keys[_current_key_idx])
+    logger.info(f"Rotated to API key index {_current_key_idx}")
+    return True
 
 
 
@@ -95,19 +116,22 @@ Dựa vào các chỉ số kỹ thuật trên (hãy kết hợp cả các dữ l
     return prompt
 
 
-def analyze_scorecards(target_symbol, scorecards, strategy_result):
+def analyze_scorecards(target_symbol: str, scorecards: dict, strategy_result: dict) -> str:
     """Gọi Gemini API để lấy phân tích."""
+    global _client
     if _client is None:
-        return "⚠️ Lỗi: Chưa cấu hình GEMINI_API_KEY."
+        return "⚠️ Lỗi: Chưa cấu hình GEMINI_API_KEYS."
 
     prompt = generate_prompt(target_symbol, scorecards, strategy_result)
     logger.info(f"Sending prompt to Gemini for {target_symbol}")
 
     max_retries = 3
+    current_model = getattr(config, 'GEMINI_MODEL', 'gemini-3.5-flash')
+    
     for attempt in range(1, max_retries + 1):
         try:
             response = _client.models.generate_content(
-                model=config.GEMINI_MODEL,
+                model=current_model,
                 contents=prompt
             )
             return response.text
@@ -115,20 +139,25 @@ def analyze_scorecards(target_symbol, scorecards, strategy_result):
             err_str = str(e)
             logger.warning(f"Error calling Gemini API (attempt {attempt}/{max_retries}): {e}")
             
-            # Kiểm tra lỗi Rate Limit 429 / ResourceExhausted
-            if "429" in err_str or "ResourceExhausted" in err_str or "Resource exhausted" in err_str or "quota" in err_str.lower():
-                sleep_time = 65
-                logger.warning(f"Gemini API rate limited (429/ResourceExhausted). Sleeping for {sleep_time}s before retry...")
-                time.sleep(sleep_time)
+            is_503 = "UNAVAILABLE" in err_str or "Service Unavailable" in err_str
+            is_429 = "RESOURCE_EXHAUSTED" in err_str or "ResourceExhausted" in err_str or "quota" in err_str.lower() or "429" in err_str
+            
+            if is_503 and not is_429:
+                logger.warning(f"503 Service Unavailable. Fallback from {current_model} to gemini-2.5-flash...")
+                current_model = "gemini-2.5-flash"
+                time.sleep(1)
+            elif is_429:
+                logger.warning("Gemini API rate limited (429/ResourceExhausted). Rotating API key...")
+                rotate_api_key(is_overall=False)
+                time.sleep(2)
             else:
                 if attempt == max_retries:
                     logger.error("All Gemini API attempts failed.")
                     return f"⚠️ Lỗi phân tích AI: {str(e)}"
                 time.sleep(2)
 
-    # Fallback: tất cả retry đều thất bại (ví dụ 429 liên tục)
-    logger.error(f"All {max_retries} Gemini API attempts failed for {target_symbol} (likely rate limited).")
-    return f"⚠️ Lỗi phân tích AI: Đã thử {max_retries} lần nhưng đều bị Rate Limit."
+    logger.error(f"All {max_retries} Gemini API attempts failed for {target_symbol}.")
+    return f"⚠️ Lỗi phân tích AI: Đã thử {max_retries} lần nhưng đều thất bại."
 
 
 def generate_overall_prompt(scorecards_by_target, ai_reports, total_targets=0, market_breadth=None, macro_data=None):
@@ -219,10 +248,11 @@ Hãy đưa ra một Báo cáo Chiến lược Tổng quan Thị trường ngắn
 
 def analyze_overall_market(scorecards_by_target, ai_reports, total_targets=0, market_breadth=None, macro_data=None):
     """Gọi Gemini API để tạo nhận định tổng quan thị trường."""
+    global _client, _client_overall
     client_to_use = _client_overall if _client_overall is not None else _client
     
     if client_to_use is None:
-        return "⚠️ Lỗi: Chưa cấu hình GEMINI_API_KEY hoặc GEMINI_API_KEY_OVERALL."
+        return "⚠️ Lỗi: Chưa cấu hình GEMINI_API_KEYS hoặc GEMINI_API_KEY_OVERALL."
     if not ai_reports:
         return "⚠️ Không có báo cáo AI lẻ để tổng hợp."
         
@@ -231,13 +261,15 @@ def analyze_overall_market(scorecards_by_target, ai_reports, total_targets=0, ma
     if _client_overall is not None:
         logger.info("Sending overall market prompt to Gemini using GEMINI_API_KEY_OVERALL...")
     else:
-        logger.info("Sending overall market prompt to Gemini using GEMINI_API_KEY (fallback)...")
+        logger.info("Sending overall market prompt to Gemini using GEMINI_API_KEYS...")
         
     max_retries = 3
+    current_model = getattr(config, 'GEMINI_MODEL', 'gemini-3.5-flash')
+    
     for attempt in range(1, max_retries + 1):
         try:
             response = client_to_use.models.generate_content(
-                model=config.GEMINI_MODEL,
+                model=current_model,
                 contents=prompt
             )
             return response.text
@@ -245,17 +277,23 @@ def analyze_overall_market(scorecards_by_target, ai_reports, total_targets=0, ma
             err_str = str(e)
             logger.warning(f"Error calling Gemini API for overall analysis (attempt {attempt}/{max_retries}): {e}")
             
-            # Kiểm tra lỗi Rate Limit 429 / ResourceExhausted
-            if "429" in err_str or "ResourceExhausted" in err_str or "Resource exhausted" in err_str or "quota" in err_str.lower():
-                sleep_time = 65
-                logger.warning(f"Gemini API rate limited (429/ResourceExhausted) for overall analysis. Sleeping for {sleep_time}s before retry...")
-                time.sleep(sleep_time)
+            is_503 = "UNAVAILABLE" in err_str or "Service Unavailable" in err_str
+            is_429 = "RESOURCE_EXHAUSTED" in err_str or "ResourceExhausted" in err_str or "quota" in err_str.lower() or "429" in err_str
+            
+            if is_503 and not is_429:
+                logger.warning(f"503 Service Unavailable. Fallback from {current_model} to gemini-2.5-flash...")
+                current_model = "gemini-2.5-flash"
+                time.sleep(1)
+            elif is_429:
+                logger.warning("Gemini API rate limited (429). Rotating API key...")
+                rotate_api_key(is_overall=(_client_overall is not None))
+                client_to_use = _client_overall if _client_overall is not None else _client
+                time.sleep(2)
             else:
                 if attempt == max_retries:
                     logger.error("All Gemini API attempts for overall analysis failed.")
                     return f"⚠️ Lỗi phân tích AI tổng hợp: {str(e)}"
                 time.sleep(2)
 
-    # Fallback: tất cả retry đều thất bại (ví dụ 429 liên tục)
-    logger.error(f"All {max_retries} Gemini API attempts for overall analysis failed (likely rate limited).")
-    return f"⚠️ Lỗi phân tích AI tổng hợp: Đã thử {max_retries} lần nhưng đều bị Rate Limit."
+    logger.error(f"All {max_retries} Gemini API attempts for overall analysis failed.")
+    return f"⚠️ Lỗi phân tích AI tổng hợp: Đã thử {max_retries} lần nhưng đều thất bại."

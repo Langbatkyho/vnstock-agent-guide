@@ -5,3 +5,4 @@ numpy
 schedule
 requests
 google-genai
+python-dotenv

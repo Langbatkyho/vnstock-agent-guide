@@ -33,10 +33,11 @@ def calc_price_changes(df_ohlcv, df_ohlcv_long=None):
 
 def calc_consecutive_up(df_ohlcv):
     """Đếm số phiên tăng liên tiếp (tính từ phiên gần nhất trở về trước)."""
-    if df_ohlcv is None or df_ohlcv.empty:
+    if df_ohlcv is None or len(df_ohlcv) < 2:
         return 0
 
-    closes = df_ohlcv['close'].values
+    # Bỏ qua phiên hiện tại (dòng cuối cùng) để không bị rung lắc trong phiên làm ngắt chuỗi
+    closes = df_ohlcv['close'].values[:-1]
     count = 0
     for i in range(len(closes) - 1, 0, -1):
         if closes[i] > closes[i - 1]:
@@ -99,13 +100,16 @@ def calc_ta_indicators(df_ohlcv):
         if not rsi_series.empty:
             rsi_val = rsi_series.iloc[-1]
             res['rsi_14'] = rsi_val
-            # Trạng thái RSI (theo plan: RSI + Trạng thái)
-            if rsi_val >= 70:
-                res['rsi_status'] = 'Quá mua'
-            elif rsi_val <= 30:
-                res['rsi_status'] = 'Quá bán'
+            # Trích xuất 30 giá trị RSI gần nhất loại bỏ NaN
+            rsi_history_series = rsi_series.dropna().tail(30)
+            res['rsi_14_history'] = rsi_history_series.tolist()
+            # Trạng thái RSI (Theo lý thuyết RSI Range Shift dải sinh thái 40/60)
+            if rsi_val >= 60:
+                res['rsi_status'] = 'Bull Market Range (Xu hướng tăng thống trị)'
+            elif rsi_val <= 40:
+                res['rsi_status'] = 'Bear Market Range (Xu hướng giảm thống trị)'
             else:
-                res['rsi_status'] = 'Trung tính'
+                res['rsi_status'] = 'Vùng giằng co (Đang dịch chuyển xu hướng)'
 
         # ── MACD ──
         macd_df = ta.momentum.macd(fast=12, slow=26, signal=9)

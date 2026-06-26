@@ -196,3 +196,5 @@ docs/.DS_Store
 # Bot application — sensitive config and generated logs
 bot_app/config.py
 bot_app/logs/
+stock_hunt/logs/
+

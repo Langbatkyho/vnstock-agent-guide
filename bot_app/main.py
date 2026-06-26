@@ -15,7 +15,8 @@ from custom_benchmark import get_custom_benchmark_ohlcv
 from indicators import build_scorecard
 from strategy import evaluate_strategy
 from ai_analyzer import analyze_scorecards, analyze_overall_market
-from telegram_bot import format_scorecard_message, send_telegram_message, format_overall_message
+from telegram_bot import send_telegram_message
+from formatters import format_scorecard_message, format_overall_message, escape_ai_text
 
 from logger_config import setup_logger
 
@@ -51,6 +52,28 @@ def save_cycle_count(count):
             f.write(str(count))
     except Exception as e:
         logger.warning(f"Không thể lưu file cycle_state: {e}")
+
+
+
+import json
+ALERT_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", ".alert_cache")
+
+def load_alert_cache():
+    if os.path.exists(ALERT_CACHE_FILE):
+        try:
+            with open(ALERT_CACHE_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Không thể đọc file alert_cache: {e}")
+    return {}
+
+def save_alert_cache(cache):
+    try:
+        os.makedirs(os.path.dirname(ALERT_CACHE_FILE), exist_ok=True)
+        with open(ALERT_CACHE_FILE, "w") as f:
+            json.dump(cache, f)
+    except Exception as e:
+        logger.warning(f"Không thể lưu file alert_cache: {e}")
 
 
 def process_target(target_symbol, reference_symbols, df_prop=None):
@@ -140,104 +163,108 @@ def run_cycle():
     
     # Đồng bộ cycle_count từ file (đặc biệt quan trọng khi chạy scheduled_run.py một lần)
     _cycle_count = load_cycle_count()
-    
-    logger.info(f"===== Starting cycle #{_cycle_count} =====")
-
-    # Reset Market instance for fresh connections each cycle
-    reset_market()
-
-    is_full_report = (_cycle_count % config.REPORT_INTERVAL_CYCLES == 0)
-    logger.info(f"Cycle mode: {'FULL REPORT' if is_full_report else 'SIGNAL DIRECTED ONLY'}")
-
-    # Fetch global cycle metrics once to optimize API usage (Phase 11A & 11B)
-    market_breadth = fetch_market_breadth()
-    df_prop = fetch_all_proprietary_flow()
-
-    results = []
-    
-    # Bước 1: Thu thập dữ liệu cho tất cả các target
-    for target, refs in config.WATCHLIST.items():
-        try:
-            res = process_target(target, refs, df_prop=df_prop)
-            if res:
-                results.append(res)
-        except Exception as e:
-            logger.error(f"Error processing target {target}: {e}", exc_info=True)
-
-    # Bước 2: Xử lý AI lẻ và gửi tin Telegram lẻ theo điều kiện
-    ai_reports = []
-    scorecards_by_target = {}
-    
-    for r in results:
-        target = r["target"]
-        scorecards_by_target[target] = r["scorecard"]
+    alert_cache = load_alert_cache()
+    try:
         
-        # Điều kiện gọi AI lẻ: Có tín hiệu đột biến OR Chu kỳ báo cáo đầy đủ
-        call_ai = r["has_signal"] or is_full_report
+        logger.info(f"===== Starting cycle #{_cycle_count} =====")
+
+        # Reset Market instance for fresh connections each cycle
+        reset_market()
+
+        is_full_report = (_cycle_count % config.REPORT_INTERVAL_CYCLES == 0)
+        logger.info(f"Cycle mode: {'FULL REPORT' if is_full_report else 'SIGNAL DIRECTED ONLY'}")
+
+        # Fetch global cycle metrics once to optimize API usage (Phase 11A & 11B)
+        market_breadth = fetch_market_breadth()
+        df_prop = fetch_all_proprietary_flow()
+
+        results = []
         
-        ai_analysis = ""
-        if call_ai:
-            logger.info(f"Calling Gemini AI for analysis of target {target}...")
-            ai_analysis = analyze_scorecards(target, r["scorecards"], r["strategy"])
-            if ai_analysis and not ai_analysis.startswith("⚠️"):
-                ai_reports.append({"target": target, "report": ai_analysis})
+        # Bước 1: Thu thập dữ liệu cho tất cả các target
+        for target, refs in config.WATCHLIST.items():
+            try:
+                res = process_target(target, refs, df_prop=df_prop)
+                if res:
+                    results.append(res)
+            except Exception as e:
+                logger.error(f"Error processing target {target}: {e}", exc_info=True)
+
+        # Bước 2: Xử lý AI lẻ và gửi tin Telegram lẻ theo điều kiện
+        ai_reports = []
+        scorecards_by_target = {}
+        
+        for r in results:
+            target = r["target"]
+            scorecards_by_target[target] = r["scorecard"]
+            
+            # Điều kiện gọi AI lẻ: Có tín hiệu đột biến OR Chu kỳ báo cáo đầy đủ
+            call_ai = r["has_signal"] or is_full_report
+            
+            ai_analysis = ""
+            if call_ai:
+                logger.info(f"Calling Gemini AI for analysis of target {target}...")
+                ai_analysis = analyze_scorecards(target, r["scorecards"], r["strategy"])
+                if ai_analysis and not ai_analysis.startswith("⚠️"):
+                    ai_reports.append({"target": target, "report": ai_analysis})
+                    
+                    # Chỉ delay khi AI call thành công — tránh delay vô nghĩa sau khi đã sleep 65s×3 do 429
+                    if len(results) > 1:
+                        logger.info("Tạm dừng 5 giây giữa các lần gọi AI thành công...")
+                        time.sleep(5)
+            
+            # Điều kiện gửi Telegram lẻ: Có tín hiệu đột biến OR Chu kỳ báo cáo đầy đủ
+            if call_ai:
+                msg = format_scorecard_message(target, r["scorecard"], r["strategy"])
+                if ai_analysis:
+                    escaped_ai = escape_ai_text(ai_analysis)
+                    msg += f"\n<b>🤖 NHẬN ĐỊNH TỪ AI (Gemini):</b>\n{escaped_ai}\n"
+                send_telegram_message(msg)
+
+        # Bước 3: Tổng hợp vĩ mô và Báo cáo Cuối (Phase 11C)
+        # Chỉ gọi AI Tổng hợp khi có ít nhất 1 báo cáo lẻ được tạo (hoặc chu kỳ 30 phút đầy đủ)
+        if ai_reports and (is_full_report or any(r["has_signal"] for r in results)):
+            macro_data = {}
+            if is_full_report:
+                logger.info("Fetching macro and commodity data for full report...")
+                # 1. Lãi suất trái phiếu chính phủ 10Y
+                bond_data = fetch_macro_global('bond_yield')
+                if bond_data:
+                    macro_data['Trái phiếu CP 10Y'] = bond_data
                 
-                # Chỉ delay khi AI call thành công — tránh delay vô nghĩa sau khi đã sleep 65s×3 do 429
-                if len(results) > 1:
-                    logger.info("Tạm dừng 5 giây giữa các lần gọi AI thành công...")
-                    time.sleep(5)
-        
-        # Điều kiện gửi Telegram lẻ: Có tín hiệu đột biến OR Chu kỳ báo cáo đầy đủ
-        if call_ai:
-            msg = format_scorecard_message(target, r["scorecard"], r["strategy"])
-            if ai_analysis:
-                from telegram_bot import escape_ai_text
-                escaped_ai = escape_ai_text(ai_analysis)
-                msg += f"\n<b>🤖 NHẬN ĐỊNH TỪ AI (Gemini):</b>\n{escaped_ai}\n"
-            send_telegram_message(msg)
+                # 2. Lãi suất Fed
+                fed_data = fetch_macro_global('fed_rate')
+                if fed_data:
+                    macro_data['Lãi suất Fed'] = fed_data
+                
+                # 3. Giá hàng hóa theo ánh xạ
+                if hasattr(config, 'COMMODITY_MAPPING'):
+                    for target in config.WATCHLIST.keys():
+                        if target in config.COMMODITY_MAPPING:
+                            comm_name = config.COMMODITY_MAPPING[target]
+                            comm_data = fetch_commodity_price(comm_name)
+                            if comm_data:
+                                macro_data[f"Hàng hóa ({comm_name})"] = comm_data
 
-    # Bước 3: Tổng hợp vĩ mô và Báo cáo Cuối (Phase 11C)
-    # Chỉ gọi AI Tổng hợp khi có ít nhất 1 báo cáo lẻ được tạo (hoặc chu kỳ 30 phút đầy đủ)
-    if ai_reports and (is_full_report or any(r["has_signal"] for r in results)):
-        macro_data = {}
-        if is_full_report:
-            logger.info("Fetching macro and commodity data for full report...")
-            # 1. Lãi suất trái phiếu chính phủ 10Y
-            bond_data = fetch_macro_global('bond_yield')
-            if bond_data:
-                macro_data['Trái phiếu CP 10Y'] = bond_data
+            logger.info("Chủ động tạm dừng 5 giây trước khi thực hiện phân tích tổng quan...")
+            time.sleep(5)
+            logger.info("Processing overall market analysis...")
+            overall_summary = analyze_overall_market(
+                scorecards_by_target, ai_reports, 
+                total_targets=len(config.WATCHLIST),
+                market_breadth=market_breadth,
+                macro_data=macro_data if is_full_report else None
+            )
             
-            # 2. Lãi suất Fed
-            fed_data = fetch_macro_global('fed_rate')
-            if fed_data:
-                macro_data['Lãi suất Fed'] = fed_data
-            
-            # 3. Giá hàng hóa theo ánh xạ
-            if hasattr(config, 'COMMODITY_MAPPING'):
-                for target in config.WATCHLIST.keys():
-                    if target in config.COMMODITY_MAPPING:
-                        comm_name = config.COMMODITY_MAPPING[target]
-                        comm_data = fetch_commodity_price(comm_name)
-                        if comm_data:
-                            macro_data[f"Hàng hóa ({comm_name})"] = comm_data
+            overall_msg = format_overall_message(overall_summary)
+            send_telegram_message(overall_msg)
 
-        logger.info("Chủ động tạm dừng 5 giây trước khi thực hiện phân tích tổng quan...")
-        time.sleep(5)
-        logger.info("Processing overall market analysis...")
-        overall_summary = analyze_overall_market(
-            scorecards_by_target, ai_reports, 
-            total_targets=len(config.WATCHLIST),
-            market_breadth=market_breadth,
-            macro_data=macro_data if is_full_report else None
-        )
-        
-        overall_msg = format_overall_message(overall_summary)
-        send_telegram_message(overall_msg)
+        _cycle_count += 1
+        logger.info("===== Cycle completed. Waiting for next schedule... =====")
 
-    _cycle_count += 1
-    save_cycle_count(_cycle_count)
-    logger.info("===== Cycle completed. Waiting for next schedule... =====")
 
+    finally:
+        save_cycle_count(_cycle_count)
+        save_alert_cache(alert_cache)
 
 def main():
     logger.info("Starting Automated Stock Monitoring System...")

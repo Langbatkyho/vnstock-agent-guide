@@ -47,6 +47,21 @@ Thiết lập Task Scheduler cho Windows và thêm cơ chế Logging chuyên ngh
 Khách hàng yêu cầu rà soát tối ưu code và chuyển đổi SDK AI sang thư viện `google.genai` mới nhất.
 **Đánh giá:** Quá trình Audit phát hiện và sửa 8 lỗi logic/hiệu năng (cache benchmark DataFrame theo ngày, invalidate cache 5Y, bảo vệ API key trong `.gitignore`, v.v.). Việc chuyển đổi từ SDK cũ (`google.generativeai`) sang SDK mới (`google.genai`) thành công bằng cách áp dụng mô hình `Client` object-oriented. Xử lý triệt để lỗi `503 Service Unavailable` từ Google bằng cơ chế Retry Loop.
 
+### Giai đoạn 9: Tích hợp Vĩ mô & Dòng tiền Chuyên sâu (Phase 11)
+Khách hàng muốn mở rộng hệ thống bằng `vnstock_data` v3.2.0 (tích hợp RRG, Tự doanh, Peer Compare, Độ rộng thị trường và Vĩ mô toàn cầu).
+**Đánh giá:** Chiến lược thiết kế "Additive" (bổ sung thay vì phá vỡ code cũ) hoạt động cực kỳ hiệu quả. Phát hiện và xử lý lỗi xung đột từ khóa Python (`global`) thông qua `getattr()`. Tối ưu API tốt khi phân lớp dữ liệu toàn cục (gọi 1 lần) và dữ liệu cụ thể (gọi theo target). Hệ thống xử lý thành công ngoại lệ (Rate Limit 429) nhờ cơ chế Backoff 65s và Type Serialization.
+
+### Giai đoạn 10: Tích hợp Động lượng Sinh thái & State Caching (Phase 12)
+Khách hàng muốn áp dụng tư duy giao dịch từ lý thuyết RSI Range Shift (Dải 40/60) thay cho các công thức đột phá nền truyền thống, đồng thời yêu cầu giảm thiểu tin nhắn rác (spam) qua Telegram.
+**Đánh giá:** Chiến lược thay thế các `rule` trong `strategy.py` cực kỳ an toàn, chuyển đổi từ "xem xét nền giá trừu tượng" sang "lượng hóa toán học dứt khoát" (RSI > 60, Vol > 1.5 lần, Mua chủ động > 55%). Kỹ thuật State Caching qua JSON file `logs/.alert_cache` là giải pháp chống Spam hoàn hảo cho các tác vụ Daemon chạy ngầm liên tục qua Windows Task Scheduler.
+
+### Giai đoạn 11: Tái cấu trúc Resiliency & God Object (Phase 13)
+Nâng cấp bot_app theo tiêu chuẩn Multi-Agent mới để tối đa hoá độ bền bỉ của hệ thống.
+- Tách file Telegram cồng kềnh thành module `formatters.py` chuyên biệt.
+- Tích hợp xoay vòng API Keys và chế độ tự tụt model (Fallback) khi dính lỗi Google API.
+- Đưa các lệnh lưu cache vào khối lệnh `finally` để bảo đảm Atomic Caching.
+**Đánh giá:** Quá trình phân bổ 2 Agent rẽ nhánh (branch) chạy song song và tự viết test local giúp tăng tốc độ tích hợp, tránh xung đột mã nguồn. Phát hiện lỗi logic substring thú vị ở phần bắt lỗi 429.
+
 ---
 
 ## 2. Đề xuất Cải tiến Tối ưu cho Dự án tiếp theo
@@ -87,5 +102,37 @@ Khách hàng yêu cầu rà soát tối ưu code và chuyển đổi SDK AI sang
 **Vấn đề:** Gửi tin nhắn Telegram bị nghẽn mạng, hoặc gọi Gemini bị lỗi 503 do tải cao dẫn đến sập chu kỳ xử lý.
 **Giải pháp:** Mọi kết nối gọi API ra ngoài hệ thống bắt buộc phải bọc trong một **Retry Loop** (ví dụ: thử lại 3 lần, delay 2s) trước khi văng lỗi, nhằm chịu đựng các lỗi thoáng qua (transient errors).
 
+### Cải tiến 9: Quản lý Xung đột Từ khóa Ngôn ngữ (Language Keyword Conflicts)
+**Vấn đề:** Các endpoint API đôi khi trùng với từ khóa hệ thống (ví dụ `Macro().global` bị lỗi syntax trong Python vì `global` là từ khóa bảo lưu).
+**Giải pháp:** Áp dụng kỹ thuật Reflection hoặc các hàm tích hợp như `getattr(obj, 'global')` thay vì truy cập trực tiếp bằng dấu chấm. Luôn lường trước rủi ro này khi sử dụng các thư viện bên thứ 3.
+
+### Cải tiến 10: Đồng bộ Kiểu Dữ liệu trước khi Đẩy qua JSON/LLM (Serialization Type Handling)
+**Vấn đề:** Hàm gọi Gemini AI bị crash do hàm `json.dumps()` không thể parse các kiểu dữ liệu mảng như `numpy.int64`, `numpy.float64` sinh ra từ Pandas.
+**Giải pháp:** Xây dựng một hàm tiện ích chung `_to_native()` để duyệt và ép kiểu dữ liệu từ thư viện chuyên ngành về các kiểu nguyên thủy (native) của Python (int, float, str) trước khi đẩy vào prompt.
+
+### Cải tiến 11: Cơ chế Tự phục hồi LLM (LLM Rate Limit Backoff)
+**Vấn đề:** Thiết kế độ trễ 15 RPM là chưa đủ an toàn nếu server LLM bị nghẽn (ResourceExhausted / Lỗi 429), khiến toàn bộ chu kỳ bị hủy.
+**Giải pháp:** Thay vì văng lỗi, luồng gửi prompt AI cần bắt cứng mã lỗi 429, sau đó đưa luồng vào giấc ngủ (Sleep) với thời gian đủ dài (vd: 65 giây) rồi mới retry tự động, giúp hệ thống bền bỉ hoạt động không cần can thiệp tay.
+
+### Cải tiến 12: Đảm bảo Tính Nhất Quán của Chỉ Báo khi có Dữ Liệu Intraday (Intraday Data Consistency)
+**Vấn đề:** Khi chạy bot thời gian thực trong giờ giao dịch, dòng cuối cùng của bảng dữ liệu lịch sử OHLCV luôn là phiên giao dịch hiện tại đang diễn ra (chưa kết thúc). Việc tính toán các chỉ báo đếm chuỗi liên tục (như số phiên tăng liên tiếp) trực tiếp trên toàn bộ dữ liệu sẽ làm biến động tức thời của phiên Intraday (đang rung lắc) phá vỡ chuỗi lịch sử đã hoàn tất, gây ra các thông tin nhiễu cho chiến lược giao dịch.
+**Giải pháp:** Với các chỉ báo đếm chuỗi hoặc phân tích kỹ thuật lịch sử cần sự chắc chắn của phiên đã đóng cửa, bắt buộc phải cắt bỏ dòng cuối cùng (`[:-1]`) để tính toán dựa trên các phiên đã hoàn tất chính thức. Chỉ sử dụng dữ liệu phiên hiện tại cho các chỉ báo thời gian thực (như so sánh giá hiện tại, volume tích lũy tính đến hiện tại).
+
+### Cải tiến 13: Caching Trạng thái Môi trường (State Caching)
+**Vấn đề:** Các bot chạy ngầm bị kích hoạt bằng Scheduler sẽ mất hoàn toàn thông tin của các lần chạy trước trong RAM, dẫn đến việc liên tục báo động trùng lặp (spam) cùng một tín hiệu.
+**Giải pháp:** Sử dụng JSON file siêu nhẹ để lưu trạng thái của Notification (ví dụ `.alert_cache`). Thiết kế Local Engine đọc file đầu chu kỳ và ghi file cuối chu kỳ. Luôn có phương án Clear/Pop state khi tín hiệu đảo ngược để duy trì bộ nhớ sạch.
+
+### Cải tiến 14: Nguy cơ Trùng số của Ngoại lệ (Substring Match Collision)
+**Vấn đề:** Việc kiểm tra mã lỗi bằng cách tìm kiếm chuỗi đơn giản như `if "503" in str(exception)` có thể bị nhận diện nhầm khi thông báo lỗi chứa các tham số số học ngẫu nhiên (ví dụ thông tin thời gian chờ của lỗi 429: `Please retry in 17.844805033s`).
+**Giải pháp:** Tránh việc dùng các chuỗi số ngắn để so khớp exception thô. Nên sử dụng các hằng số định danh chính xác (như `UNAVAILABLE` của Google API) hoặc kết hợp loại trừ các trạng thái trùng lặp chéo.
+
+### Cải tiến 15: Shift-Left Testing & Branch Workspace cho Multi-Agent
+**Vấn đề:** Khi phân chia tác vụ song song cho các Subagents, Orchestrator dễ gặp tình trạng nhận lại code bị lỗi vặt (lỗi cú pháp, import thiếu), gây tắc nghẽn khâu tích hợp.
+**Giải pháp:** Yêu cầu các Subagents phải rẽ nhánh độc lập (`Workspace: branch`) để tránh đè code, bắt buộc tự viết mock test (`scratch/test_*.py`) và chạy thành công trên Terminal cục bộ trước khi bàn giao.
+
+### Cải tiến 16: Tự động hóa nạp Môi trường bằng dotenv
+**Vấn đề:** Khi chạy bot thông qua Task Scheduler hoặc Batch file bên ngoài, các biến trong `.env` không tự động nạp vào `os.environ` nếu mã nguồn Python không gọi `load_dotenv()`.
+**Giải pháp:** Luôn khai báo `load_dotenv()` ngay tại file cấu hình đầu vào (`config.py`) để các biến môi trường luôn sẵn sàng ở mọi môi trường kích hoạt bot.
+
 ---
-**Kết luận:** Sự kết hợp giữa khả năng bóc tách vấn đề của người dùng và khả năng truy vết lỗi hệ thống của AI đã giúp chúng ta có một sản phẩm rất chất lượng. Việc áp dụng 8 cải tiến trên sẽ giúp rút ngắn thời gian phát triển các hệ thống tương đương trong tương lai, đạt chuẩn "production-ready" ngay từ lần chạy đầu tiên.
+**Kết luận:** Sự kết hợp giữa khả năng bóc tách vấn đề của người dùng và khả năng truy vết lỗi hệ thống của AI đã giúp chúng ta có một sản phẩm rất chất lượng. Việc áp dụng 16 cải tiến trên sẽ giúp rút ngắn thời gian phát triển các hệ thống tương đương trong tương lai, đạt chuẩn "production-ready" ngay từ lần chạy đầu tiên.
