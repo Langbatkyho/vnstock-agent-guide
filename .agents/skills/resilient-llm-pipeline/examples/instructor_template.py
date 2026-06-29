@@ -16,7 +16,7 @@ def call_llm_with_retry(prompt: str, api_keys: list[str]) -> UserInfoSchema:
             genai_client = genai.Client(api_key=key)
             client = instructor.from_genai(
                 client=genai_client,
-                mode=instructor.Mode.GEMINI_JSON,
+                mode=instructor.Mode.JSON,
             )
             
             # 3. Thực thi gọi LLM (tự động parse ra Schema + tự sửa lỗi 3 lần)
